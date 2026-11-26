@@ -41,6 +41,7 @@ server {
     location / {
         client_max_body_size ${CLIENT_MAX_BODY_SIZE};
 
+        # Host must match the upstream (Render/Cloudflare reject a wrong Host).
         proxy_set_header Host ${PROXY_HOST_HEADER};
         proxy_set_header Proxy "";
         proxy_set_header Upgrade $http_upgrade;
@@ -55,6 +56,10 @@ server {
         proxy_read_timeout ${PROXY_TIMEOUT};
         proxy_send_timeout ${PROXY_TIMEOUT};
         proxy_redirect off;
+
+        # Needed when BACKEND is https:// (SNI for Cloudflare/Render).
+        proxy_ssl_server_name on;
+        proxy_ssl_protocols TLSv1.2 TLSv1.3;
 
         proxy_pass ${BACKEND};
     }

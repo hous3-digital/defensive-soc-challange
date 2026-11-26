@@ -4,7 +4,7 @@
 # plus API events posted straight to the collector.
 set -euo pipefail
 
-edge="${EDGE_URL:-http://127.0.0.1:8080}"
+edge="${EDGE_URL:-http://127.0.0.1:80}"
 collector="${COLLECTOR_URL:-http://127.0.0.1:8081}"
 os="${OPENSEARCH_URL:-http://127.0.0.1:9200}"
 password="${COLLECTOR_PASSWORD:-local-dev-only}"
@@ -18,7 +18,7 @@ curl -fsS -o /dev/null -H "X-Forwarded-For: $attacker" "$edge/"
 echo "ok  benign request proxied"
 
 code="$(curl -sS -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: $attacker" \
-  "$edge/products?id=1%27%20UNION%20SELECT%20password%20FROM%20users--")"
+  "$edge/login?id=1%27%20UNION%20SELECT%20password%20FROM%20users--")"
 [ "$code" = "200" ] || fail "SQLi request returned $code (DetectionOnly must not block)"
 echo "ok  SQLi request not blocked (DetectionOnly)"
 

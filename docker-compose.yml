@@ -1,5 +1,7 @@
-# Local development stack mirroring render.yaml. Every port is bound to
-# loopback; Cloudflare Access validation is disabled for dashboards.
+# Challenge / lab stack mirroring render.yaml.
+# Public: edge (:80) and dashboards (:5601) — restrict both in the Security Group
+# (participant IP /32). OpenSearch and collector stay on loopback.
+# Dashboards auth is off (AUTH_DISABLED_LOCAL_ONLY); do not open 5601 to 0.0.0.0/0.
 name: soc
 
 x-ingest-env: &ingest-env
@@ -34,21 +36,19 @@ services:
       opensearch:
         condition: service_healthy
 
-  # Stand-in for the real API behind the edge.
-  demo-api:
-    image: traefik/whoami:v1.11
-
+  # Proxies to the Mesa Norte lab API (offensive-seg-challange-api on Render).
+  # Override BACKEND / PROXY_HOST_HEADER in .env if the upstream URL changes.
   edge:
     build: ./services/edge
     environment:
       <<: *ingest-env
       COLLECTOR_HOSTPORT: collector:8080
-      BACKEND: http://demo-api:80
+      BACKEND: ${BACKEND:-https://offensive-seg-challange-api.onrender.com}
+      PROXY_HOST_HEADER: ${PROXY_HOST_HEADER:-offensive-seg-challange-api.onrender.com}
     ports:
-      - "127.0.0.1:8080:8080"
+      - "80:8080"
     depends_on:
       - collector
-      - demo-api
 
   dashboards:
     build: ./services/dashboards
@@ -56,7 +56,7 @@ services:
       OPENSEARCH_HOSTPORT: opensearch:9200
       AUTH_DISABLED_LOCAL_ONLY: "true"
     ports:
-      - "127.0.0.1:5601:10000"
+      - "5601:10000"
     depends_on:
       opensearch:
         condition: service_healthy
