@@ -11,6 +11,7 @@ x-ingest-env: &ingest-env
 services:
   opensearch:
     build: ./services/opensearch
+    restart: unless-stopped
     environment:
       OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
       SOC_RETENTION_DAYS: "3"
@@ -27,6 +28,7 @@ services:
 
   collector:
     build: ./services/collector
+    restart: unless-stopped
     environment:
       <<: *ingest-env
       OPENSEARCH_HOSTPORT: opensearch:9200
@@ -40,6 +42,7 @@ services:
   # Override BACKEND / PROXY_HOST_HEADER in .env if the upstream URL changes.
   edge:
     build: ./services/edge
+    restart: unless-stopped
     environment:
       <<: *ingest-env
       COLLECTOR_HOSTPORT: collector:8080
@@ -52,6 +55,7 @@ services:
 
   dashboards:
     build: ./services/dashboards
+    restart: unless-stopped
     environment:
       OPENSEARCH_HOSTPORT: opensearch:9200
       AUTH_DISABLED_LOCAL_ONLY: "true"

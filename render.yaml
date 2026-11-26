@@ -49,7 +49,8 @@ services:
           name: soc-opensearch
           property: hostport
 
-  - type: pserv
+  # Public edge: challenge traffic → ModSecurity/CRS → Mesa Norte API on Render.
+  - type: web
     name: soc-edge
     runtime: docker
     region: virginia
@@ -58,6 +59,7 @@ services:
     dockerfilePath: ./services/edge/Dockerfile
     buildFilter:
       paths: ["services/edge/**"]
+    healthCheckPath: /healthz
     envVars:
       - fromGroup: soc-ingest
       - key: COLLECTOR_HOSTPORT
@@ -65,8 +67,11 @@ services:
           type: pserv
           name: soc-collector
           property: hostport
-      - key: BACKEND # e.g. http://soc-api:8000
-        sync: false
+      - key: BACKEND
+        value: "https://offensive-seg-challange-api.onrender.com"
+      - key: PROXY_HOST_HEADER
+        value: "offensive-seg-challange-api.onrender.com"
+      # Trust Render's private hop so X-Forwarded-For becomes source.ip in logs.
       - key: SET_REAL_IP_FROM
         value: "10.0.0.0/8"
 
