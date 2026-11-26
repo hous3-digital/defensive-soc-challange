@@ -1,0 +1,9 @@
+#!/bin/sh
+# supervisord event listener: if any program gives up restarting (FATAL),
+# stop the whole container so the platform restarts it instead of leaving
+# a half-working edge running silently.
+printf 'READY\n'
+while read -r header; do
+  echo "supervisord: process entered FATAL state, stopping container ($header)" >&2
+  kill -TERM "$(cat /tmp/supervisord.pid)"
+done

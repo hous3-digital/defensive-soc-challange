@@ -1,0 +1,84 @@
+# Run with `make test-vector`. Samples are trimmed real outputs of the edge.
+tests:
+  - name: edge access log is normalized
+    inputs:
+      - insert_at: route_source
+        type: vrl
+        source: |
+          . = parse_json!(s'{"_ingest_path":"/v1/edge","log_type":"nginx_access","time":"2026-11-26T15:25:54+00:00","request_id":"c06b9d5fbab5856b337466d65565cd26","client_ip":"203.0.113.121","peer_ip":"10.0.0.7","x_forwarded_for":"203.0.113.121","method":"GET","host":"api.example.com","uri":"/products?id=1","protocol":"HTTP/1.1","status":200,"bytes_sent":385,"request_length":171,"request_time":0.005,"upstream_addr":"10.0.0.9:80","upstream_status":"200","upstream_response_time":"0.005","referer":"","user_agent":"curl/8.21.0","edge":{"hostname":"edge-1"}}')
+    outputs:
+      - extract_from: normalize_access
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event.dataset, "edge.access")
+              assert_eq!(._soc_index, "edge-access")
+              assert_eq!(.source.ip, "203.0.113.121")
+              assert_eq!(.observer.peer_ip, "10.0.0.7")
+              assert_eq!(.http.request.id, "c06b9d5fbab5856b337466d65565cd26")
+              assert_eq!(.http.response.status_code, 200)
+              assert_eq!(.url.path, "/products")
+              assert_eq!(.url.query, "id=1")
+              assert_eq!(.event.duration, 5000000)
+              assert_eq!(."@timestamp", t'2026-11-26T15:25:54Z')
+              assert!(!exists(.http.request.referrer))
+              assert!(!exists(._ingest_path))
+
+  - name: modsecurity audit entry becomes a WAF alert
+    inputs:
+      - insert_at: route_source
+        type: vrl
+        source: |
+          . = parse_json!(s'{"_ingest_path":"/v1/edge","edge":{"hostname":"edge-1"},"transaction":{"client_ip":"203.0.113.121","time_stamp":"Thu Nov 26 15:25:54 2026","client_port":0,"unique_id":"c06b9d5fbab5856b337466d65565cd26","request":{"method":"GET","http_version":"1.1","uri":"/products?id=1 UNION SELECT password FROM users--","headers":{"Host":"api.example.com","User-Agent":"curl/8.21.0","Authorization":"Bearer secret","Cookie":"session=abc"}},"response":{"http_code":200},"producer":{"modsecurity":"ModSecurity v3.0.17 (Linux)","secrules_engine":"DetectionOnly","components":["OWASP_CRS/4.30.0\""]},"messages":[{"message":"SQL Injection Attack Detected via libinjection","details":{"ruleId":"942100","severity":"2","data":"Matched Data: sUEnk found within ARGS:id","tags":["attack-sqli","paranoia-level/1","OWASP_CRS"]}},{"message":"Inbound Anomaly Score Exceeded (Total Score: 23)","details":{"ruleId":"949110","severity":"0","tags":["anomaly-evaluation","OWASP_CRS"]}}]}}')
+    outputs:
+      - extract_from: normalize_waf
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event.dataset, "edge.waf")
+              assert_eq!(.event.kind, "alert")
+              assert_eq!(._soc_index, "edge-waf")
+              assert_eq!(.source.ip, "203.0.113.121")
+              assert!(!exists(.source.port))
+              assert_eq!(.http.request.id, "c06b9d5fbab5856b337466d65565cd26")
+              assert_eq!(.rule.id, ["942100", "949110"])
+              assert_eq!(.waf.anomaly_score, 23)
+              assert_eq!(.waf.attack_types, ["attack-sqli"])
+              assert_eq!(.waf.engine_mode, "DetectionOnly")
+              assert_eq!(.waf.ruleset, ["OWASP_CRS/4.30.0"])
+              assert_eq!(.event.severity, 2)
+              assert_eq!(.http.request.headers.authorization, "[REDACTED]")
+              assert_eq!(.http.request.headers.cookie, "[REDACTED]")
+              assert_eq!(.user_agent.original, "curl/8.21.0")
+              assert_eq!(.url.path, "/products")
+              assert_eq!(."@timestamp", t'2026-11-26T15:25:54Z')
+
+  - name: api events keep their payload and timestamp
+    inputs:
+      - insert_at: route_source
+        type: vrl
+        source: |
+          . = parse_json!(s'{"_ingest_path":"/v1/api","_ingest_peer":"10.0.0.3","source_type":"http_server","timestamp":"2026-11-26T12:00:00-03:00","event":{"action":"login_failed"},"user":{"name":"alice"}}')
+    outputs:
+      - extract_from: normalize_api
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event.dataset, "api.events")
+              assert_eq!(.event.action, "login_failed")
+              assert_eq!(._soc_index, "api-events")
+              assert_eq!(."@timestamp", t'2026-11-26T15:00:00Z')
+              assert!(!exists(._ingest_path))
+              assert!(!exists(._ingest_peer))
+              assert!(!exists(.source_type))
+
+  - name: unknown ingest paths are dropped
+    inputs:
+      - insert_at: route_source
+        type: vrl
+        source: |
+          . = {"_ingest_path": "/v1/other", "foo": "bar"}
+    no_outputs_from:
+      - normalize_access
+      - normalize_waf
+      - normalize_api

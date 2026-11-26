@@ -1,0 +1,65 @@
+# Local development stack mirroring render.yaml. Every port is bound to
+# loopback; Cloudflare Access validation is disabled for dashboards.
+name: soc
+
+x-ingest-env: &ingest-env
+  COLLECTOR_USERNAME: ingest
+  COLLECTOR_PASSWORD: ${COLLECTOR_PASSWORD:-local-dev-only}
+
+services:
+  opensearch:
+    build: ./services/opensearch
+    environment:
+      OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+      SOC_RETENTION_DAYS: "3"
+    volumes:
+      - opensearch-data:/var/lib/opensearch
+    ports:
+      - "127.0.0.1:9200:9200"
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  collector:
+    build: ./services/collector
+    environment:
+      <<: *ingest-env
+      OPENSEARCH_HOSTPORT: opensearch:9200
+    ports:
+      - "127.0.0.1:8081:8080"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  # Stand-in for the real API behind the edge.
+  demo-api:
+    image: traefik/whoami:v1.11
+
+  edge:
+    build: ./services/edge
+    environment:
+      <<: *ingest-env
+      COLLECTOR_HOSTPORT: collector:8080
+      BACKEND: http://demo-api:80
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      - collector
+      - demo-api
+
+  dashboards:
+    build: ./services/dashboards
+    environment:
+      OPENSEARCH_HOSTPORT: opensearch:9200
+      AUTH_DISABLED_LOCAL_ONLY: "true"
+    ports:
+      - "127.0.0.1:5601:10000"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+volumes:
+  opensearch-data:

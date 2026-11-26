@@ -1,0 +1,93 @@
+{
+  "index_patterns": ["soc-*"],
+  "priority": 200,
+  "template": {
+    "settings": {
+      "index.number_of_shards": 1,
+      "index.number_of_replicas": 0,
+      "index.refresh_interval": "5s",
+      "index.codec": "best_compression",
+      "index.mapping.total_fields.limit": 2000,
+      "index.mapping.ignore_malformed": true
+    },
+    "mappings": {
+      "dynamic_templates": [
+        {
+          "strings_as_keyword": {
+            "match_mapping_type": "string",
+            "mapping": { "type": "keyword", "ignore_above": 2048 }
+          }
+        }
+      ],
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "event": {
+          "properties": {
+            "ingested": { "type": "date" },
+            "duration": { "type": "long" },
+            "severity": { "type": "long" }
+          }
+        },
+        "source": {
+          "properties": {
+            "ip": { "type": "ip" },
+            "port": { "type": "long" }
+          }
+        },
+        "http": {
+          "properties": {
+            "request": {
+              "properties": {
+                "headers": { "type": "flat_object" },
+                "bytes": { "type": "long" },
+                "body": { "properties": { "content": { "type": "text" } } }
+              }
+            },
+            "response": {
+              "properties": {
+                "status_code": { "type": "integer" },
+                "body": { "properties": { "bytes": { "type": "long" } } }
+              }
+            }
+          }
+        },
+        "url": {
+          "properties": {
+            "original": {
+              "type": "keyword",
+              "ignore_above": 8192,
+              "fields": { "text": { "type": "text" } }
+            },
+            "path": { "type": "keyword", "ignore_above": 4096 },
+            "query": { "type": "keyword", "ignore_above": 8192 }
+          }
+        },
+        "user_agent": {
+          "properties": {
+            "original": {
+              "type": "keyword",
+              "ignore_above": 2048,
+              "fields": { "text": { "type": "text" } }
+            }
+          }
+        },
+        "waf": {
+          "properties": {
+            "anomaly_score": { "type": "integer" },
+            "rules": {
+              "properties": {
+                "severity": { "type": "integer" },
+                "message": {
+                  "type": "text",
+                  "fields": { "keyword": { "type": "keyword", "ignore_above": 1024 } }
+                },
+                "data": { "type": "text" },
+                "match": { "type": "text" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

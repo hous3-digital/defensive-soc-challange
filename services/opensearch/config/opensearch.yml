@@ -1,0 +1,21 @@
+cluster.name: soc
+node.name: soc-opensearch-0
+
+path.data: /var/lib/opensearch/data
+path.logs: /usr/share/opensearch/logs
+
+# HTTP is reachable on the private network; transport stays on loopback
+# (single node, no peers).
+http.host: 0.0.0.0
+http.port: 9200
+transport.host: 127.0.0.1
+
+discovery.type: single-node
+
+# Containers on PaaS cannot raise vm.max_map_count or lock memory.
+node.store.allow_mmap: false
+bootstrap.memory_lock: false
+
+# Implicit index creation only for our indices and system indices.
+action.auto_create_index: "+soc-*,+.*,-*"
+action.destructive_requires_name: true

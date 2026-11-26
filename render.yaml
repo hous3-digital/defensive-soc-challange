@@ -1,0 +1,92 @@
+# Render Blueprint for the SOC stack. All services must share the same
+# region so they can talk over Render's private network.
+
+envVarGroups:
+  # Shared ingest credentials: link this group to any service that posts
+  # events to the collector (edge, and the API).
+  - name: soc-ingest
+    envVars:
+      - key: COLLECTOR_USERNAME
+        value: ingest
+      - key: COLLECTOR_PASSWORD
+        generateValue: true
+
+services:
+  - type: pserv
+    name: soc-opensearch
+    runtime: docker
+    region: virginia
+    plan: pro # 4 GB RAM / 2 CPU; heap is 50% of RAM
+    numInstances: 1
+    dockerContext: ./services/opensearch
+    dockerfilePath: ./services/opensearch/Dockerfile
+    buildFilter:
+      paths: ["services/opensearch/**"]
+    disk:
+      name: opensearch-data
+      mountPath: /var/lib/opensearch
+      sizeGB: 20
+    envVars:
+      - key: OPENSEARCH_JAVA_OPTS
+        value: "-Xms2g -Xmx2g"
+      - key: SOC_RETENTION_DAYS
+        value: "14"
+
+  - type: pserv
+    name: soc-collector
+    runtime: docker
+    region: virginia
+    plan: starter
+    dockerContext: ./services/collector
+    dockerfilePath: ./services/collector/Dockerfile
+    buildFilter:
+      paths: ["services/collector/**"]
+    envVars:
+      - fromGroup: soc-ingest
+      - key: OPENSEARCH_HOSTPORT
+        fromService:
+          type: pserv
+          name: soc-opensearch
+          property: hostport
+
+  - type: pserv
+    name: soc-edge
+    runtime: docker
+    region: virginia
+    plan: standard # ModSecurity + CRS per nginx worker
+    dockerContext: ./services/edge
+    dockerfilePath: ./services/edge/Dockerfile
+    buildFilter:
+      paths: ["services/edge/**"]
+    envVars:
+      - fromGroup: soc-ingest
+      - key: COLLECTOR_HOSTPORT
+        fromService:
+          type: pserv
+          name: soc-collector
+          property: hostport
+      - key: BACKEND # e.g. http://soc-api:8000
+        sync: false
+      - key: SET_REAL_IP_FROM
+        value: "10.0.0.0/8"
+
+  - type: web
+    name: soc-dashboards
+    runtime: docker
+    region: virginia
+    plan: standard
+    dockerContext: ./services/dashboards
+    dockerfilePath: ./services/dashboards/Dockerfile
+    buildFilter:
+      paths: ["services/dashboards/**"]
+    healthCheckPath: /healthz
+    envVars:
+      - key: OPENSEARCH_HOSTPORT
+        fromService:
+          type: pserv
+          name: soc-opensearch
+          property: hostport
+      - key: CF_ACCESS_TEAM_DOMAIN # <team>.cloudflareaccess.com
+        sync: false
+      - key: CF_ACCESS_AUD # Access application "Application Audience (AUD) Tag"
+        sync: false

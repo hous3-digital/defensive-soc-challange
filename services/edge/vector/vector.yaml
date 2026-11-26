@@ -1,0 +1,54 @@
+data_dir: /var/lib/vector
+
+acknowledgements:
+  enabled: true
+
+sources:
+  nginx:
+    type: file
+    include:
+      - /var/log/edge/nginx.stdout.log
+      - /var/log/edge/nginx.stdout.log.*
+    read_from: beginning
+    ignore_older_secs: 86400
+    # ModSecurity audit entries include the request body.
+    max_line_bytes: 4194304
+
+transforms:
+  parse:
+    type: remap
+    inputs: [nginx]
+    drop_on_abort: true
+    source: |
+      # Same stream also carries entrypoint chatter; keep only JSON objects.
+      parsed, err = parse_json(.message)
+      if err != null || !is_object(parsed) {
+        abort
+      }
+      . = object!(parsed)
+      .edge = { "hostname": get_hostname!() }
+
+sinks:
+  collector:
+    type: http
+    inputs: [parse]
+    uri: "http://${COLLECTOR_HOSTPORT:?COLLECTOR_HOSTPORT is required}/v1/edge"
+    method: post
+    compression: gzip
+    encoding:
+      codec: json
+    framing:
+      method: newline_delimited
+    auth:
+      strategy: basic
+      user: "${COLLECTOR_USERNAME:?COLLECTOR_USERNAME is required}"
+      password: "${COLLECTOR_PASSWORD:?COLLECTOR_PASSWORD is required}"
+    batch:
+      max_bytes: 1000000
+      timeout_secs: 2
+    buffer:
+      type: memory
+      max_events: 10000
+      when_full: block
+    healthcheck:
+      enabled: false

@@ -1,0 +1,9 @@
+# Only reachable through access-proxy inside the container.
+server.host: "127.0.0.1"
+server.port: 5601
+server.name: soc-dashboards
+
+# opensearch.hosts is passed on the command line by soc-entrypoint.sh.
+opensearch.requestTimeout: 60000
+
+csp.strict: true

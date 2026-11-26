@@ -1,0 +1,242 @@
+data_dir: /var/lib/vector
+
+log_schema:
+  timestamp_key: "@timestamp"
+
+acknowledgements:
+  enabled: true
+
+sources:
+  # Single authenticated ingest endpoint:
+  #   POST /v1/api   -> application events (NDJSON or one JSON object)
+  #   POST /v1/edge  -> nginx access + ModSecurity audit shipped by the edge
+  ingest:
+    type: http_server
+    address: "0.0.0.0:${PORT:-8080}"
+    path: /v1
+    strict_path: false
+    path_key: _ingest_path
+    host_key: _ingest_peer
+    method: POST
+    auth:
+      strategy: basic
+      username: "${COLLECTOR_USERNAME:?COLLECTOR_USERNAME is required}"
+      password: "${COLLECTOR_PASSWORD:?COLLECTOR_PASSWORD is required}"
+    decoding:
+      codec: json
+    framing:
+      method: newline_delimited
+
+transforms:
+  route_source:
+    type: route
+    inputs: [ingest]
+    reroute_unmatched: false
+    route:
+      edge_access: '._ingest_path == "/v1/edge" && .log_type == "nginx_access"'
+      edge_waf: '._ingest_path == "/v1/edge" && exists(.transaction)'
+      api: '._ingest_path == "/v1/api"'
+
+  normalize_access:
+    type: remap
+    inputs: [route_source.edge_access]
+    source: |
+      e = .
+      ts = parse_timestamp(string(e.time) ?? "", "%+") ?? now()
+      url_parts = split(string(e.uri) ?? "", "?", limit: 2)
+
+      . = compact({
+        "@timestamp": ts,
+        "event": {
+          "dataset": "edge.access",
+          "module": "nginx",
+          "kind": "event",
+          "category": ["web"],
+          "type": ["access"],
+          "ingested": now(),
+          "duration": to_int((to_float(e.request_time) ?? 0.0) * 1000000000.0)
+        },
+        "source": { "ip": e.client_ip },
+        "http": {
+          "version": e.protocol,
+          "request": {
+            "id": e.request_id,
+            "method": e.method,
+            "bytes": e.request_length,
+            "referrer": e.referer,
+            "x_forwarded_for": e.x_forwarded_for
+          },
+          "response": {
+            "status_code": e.status,
+            "body": { "bytes": e.bytes_sent }
+          }
+        },
+        "url": {
+          "original": e.uri,
+          "domain": e.host,
+          "path": url_parts[0],
+          "query": url_parts[1]
+        },
+        "user_agent": { "original": e.user_agent },
+        "upstream": {
+          "address": e.upstream_addr,
+          "status": e.upstream_status,
+          "response_time": e.upstream_response_time
+        },
+        "observer": {
+          "type": "proxy",
+          "hostname": e.edge.hostname,
+          "peer_ip": e.peer_ip
+        }
+      })
+      ._soc_index = "edge-access"
+
+  normalize_waf:
+    type: remap
+    inputs: [route_source.edge_waf]
+    source: |
+      tx = object(.transaction) ?? {}
+      req = object(tx.request) ?? {}
+      res = object(tx.response) ?? {}
+      producer = object(tx.producer) ?? {}
+      hostname = .edge.hostname
+
+      redacted = ["authorization", "proxy-authorization", "cookie", "x-api-key"]
+      headers = {}
+      for_each(object(req.headers) ?? {}) -> |name, value| {
+        key = downcase(name)
+        if includes(redacted, key) {
+          value = "[REDACTED]"
+        }
+        headers = set!(headers, [key], value)
+      }
+
+      rules = map_values(array(tx.messages) ?? []) -> |m| {
+        msg = object(m) ?? {}
+        d = object(msg.details) ?? {}
+        {
+          "id": d.ruleId,
+          "message": msg.message,
+          "severity": to_int(d.severity) ?? null,
+          "data": d.data,
+          "match": d.match,
+          "tags": d.tags,
+          "file": d.file,
+          "line": d.lineNumber
+        }
+      }
+
+      # Highest severity = lowest syslog number (CRS: 2 critical ... 5 notice).
+      score = null
+      min_severity = 99
+      rule_ids = []
+      tags = []
+      for_each(rules) -> |_i, r| {
+        rule_ids = push(rule_ids, r.id)
+        tags = append(tags, array(r.tags) ?? [])
+        s, err = parse_regex(string(r.message) ?? "", r'Total Score: (?P<score>\d+)')
+        if err == null {
+          score = to_int(s.score) ?? score
+        }
+        # Anomaly evaluation rules (949110, 980170...) carry severity 0.
+        sev = to_int(r.severity) ?? 99
+        evaluation = includes(array(r.tags) ?? [], "anomaly-evaluation")
+        if r.severity != null && !evaluation && sev < min_severity {
+          min_severity = sev
+        }
+      }
+      severity = if min_severity == 99 { null } else { min_severity }
+      ruleset = map_values(array(producer.components) ?? []) -> |c| { replace(string(c) ?? "", "\"", "") }
+      client_port = if tx.client_port == 0 { null } else { tx.client_port }
+      tags = unique(tags)
+      attack_types = filter(tags) -> |_i, t| { starts_with(string(t) ?? "", "attack-") }
+
+      ts = parse_timestamp(string(tx.time_stamp) ?? "", "%a %b %e %H:%M:%S %Y") ?? now()
+      url_parts = split(string(req.uri) ?? "", "?", limit: 2)
+
+      . = compact({
+        "@timestamp": ts,
+        "event": {
+          "dataset": "edge.waf",
+          "module": "modsecurity",
+          "kind": "alert",
+          "category": ["web", "intrusion_detection"],
+          "type": ["info"],
+          "ingested": now(),
+          "severity": severity
+        },
+        "source": { "ip": tx.client_ip, "port": client_port },
+        "http": {
+          "version": req.http_version,
+          "request": {
+            "id": tx.unique_id,
+            "method": req.method,
+            "headers": headers,
+            "body": { "content": truncate(string(req.body) ?? "", 8192) }
+          },
+          "response": { "status_code": res.http_code }
+        },
+        "url": {
+          "original": req.uri,
+          "path": url_parts[0],
+          "query": url_parts[1]
+        },
+        "user_agent": { "original": get(headers, ["user-agent"]) ?? null },
+        "rule": { "id": unique(compact(rule_ids)) },
+        "tags": tags,
+        "waf": {
+          "engine_mode": producer.secrules_engine,
+          "producer": producer.modsecurity,
+          "ruleset": ruleset,
+          "anomaly_score": score,
+          "attack_types": attack_types,
+          "rules": rules
+        },
+        "observer": { "type": "waf", "hostname": hostname }
+      })
+      ._soc_index = "edge-waf"
+
+  normalize_api:
+    type: remap
+    inputs: [route_source.api]
+    source: |
+      del(._ingest_path)
+      del(._ingest_peer)
+      del(.source_type)
+      del(._soc_index)
+
+      provided = string(.timestamp) ?? string(.time) ?? ""
+      ts, err = parse_timestamp(provided, "%+")
+      if err == null {
+        ."@timestamp" = ts
+      } else if !is_timestamp(."@timestamp") {
+        ."@timestamp" = now()
+      }
+
+      dataset = string(.event.dataset) ?? ""
+      if !starts_with(dataset, "api.") {
+        .event.dataset = "api.events"
+      }
+      .event.ingested = now()
+      ._soc_index = "api-events"
+
+sinks:
+  opensearch:
+    type: elasticsearch
+    inputs: [normalize_access, normalize_waf, normalize_api]
+    endpoints: ["http://${OPENSEARCH_HOSTPORT:?OPENSEARCH_HOSTPORT is required}"]
+    api_version: v8
+    mode: bulk
+    bulk:
+      action: index
+      index: "soc-{{ _soc_index }}-%Y.%m.%d"
+    encoding:
+      except_fields: ["_soc_index"]
+    compression: gzip
+    batch:
+      max_bytes: 5000000
+      timeout_secs: 2
+    buffer:
+      type: disk
+      max_size: 536870912
+      when_full: block
